@@ -26,6 +26,69 @@
 
 ;;; Code:
 
+(require 'smie)
+
+(defun kalandralang--skip-string (&optional back)
+  (when (eq (if back (char-before) (char-after)) ?\")
+    (let ((start (point)))
+      (if back (backward-char) (forward-char))
+      (while (nth 3 (syntax-ppss))
+        (if back (backward-char) (forward-char)))
+      (buffer-substring-no-properties
+       (min start (point))
+       (max start (point))))))
+
+(defun kalandralang-smie-backward-token ()
+  (let ((start (point)))
+    (forward-comment (- (point)))
+    (cond
+     ((kalandralang--skip-string 'back))
+     ((and (< (point) start)
+           (not (looking-back "\\s(\\|\\s)" 1))
+           (let ((pos (point)))
+             (goto-char start)
+             ;; if we are looking at a symbol, insert a virtual token
+             (prog1 (and (looking-at-p "\\(?:\\s_\\|\\sw\\)+[ \t]*")
+                         (progn
+                           (skip-syntax-backward " \t")
+                           (bolp)))
+               (goto-char pos))))
+      ;; this is a virtual token separating statements on different lines
+      ";")
+     (t
+      (buffer-substring-no-properties
+       (point)
+       (progn
+         (or (not (zerop (skip-syntax-backward ".")))
+             (not (zerop (skip-syntax-backward "()")))
+             (skip-syntax-backward "w_'"))
+         (point)))))))
+
+(defconst kalandralang-smie-grammar
+  (smie-prec2->grammar
+   (smie-bnf->prec2
+    '((stmt1 ("{" stmts "}")
+             ("if" stmt "then" stmt1 "else" stmt1)
+             ("while" stmt "do" stmt1)
+             ("until" stmt "do" stmt1))
+      (stmt (stmt1) ("if" stmt "then" stmt))
+      (stmts (stmts ";" stmts) (stmt)))
+    '((assoc ";")))))
+
+(defun kalandralang-smie-rules (kind token)
+  (pcase (cons kind token)
+    (`(:after . ";") (smie-rule-separator kind))
+    (`(:before . ";")
+     (when (smie-rule-hanging-p)
+       (smie-rule-parent)))
+    (`(:elem . basic) 2)
+
+    (`(:before . "{")
+     (when (smie-rule-hanging-p)
+       (smie-rule-parent)))
+    (`(:after . "}") (smie-rule-parent))
+
+    (_ nil)))
 
 (defvar kalandralang-font-lock-keywords
   `(
@@ -141,6 +204,12 @@
 
   (modify-syntax-entry ?# "<" kalandralang-mode-syntax-table)
   (modify-syntax-entry ?\n ">" kalandralang-mode-syntax-table)
+  (modify-syntax-entry ?{ "(}" kalandralang-mode-syntax-table)
+  (modify-syntax-entry ?} "){" kalandralang-mode-syntax-table)
+
+  (smie-setup kalandralang-smie-grammar
+              #'kalandralang-smie-rules
+              :backward-token #'kalandralang-smie-backward-token)
 
   (setq-local comment-start "#")
   (setq-local comment-start-skip "#\\s-*")
