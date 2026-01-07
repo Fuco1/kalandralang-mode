@@ -38,6 +38,9 @@
   (rx (and (* space) eol))
   "Regex representing one or more whitespace characters concluding with eol.")
 
+(defconst kalandralang-smie--keywords-no-semi-token
+  (rx symbol-start (or "repeat") symbol-end))
+
 (defun kalandralang-smie-forward-token ()
   (cond
    ((and (not (eobp))
@@ -55,7 +58,8 @@
     (forward-comment (- (point)))
     (cond
      ((and (> pos (line-end-position))
-           (not (memq (char-before) '(?\{ ?\())))
+           (not (memq (char-before) '(?\{ ?\()))
+           (not (looking-back kalandralang-smie--keywords-no-semi-token (line-beginning-position))))
       ";")
      (t (let ((token (smie-default-backward-token)))
           (unless (kalandralang-smie--empty-string-p token)
@@ -66,7 +70,10 @@
    (smie-bnf->prec2
     '((atom)
       (stmt (atom)
-            ("buy" stmts "with"))
+            ("buy" stmts "with")
+            ("repeat" atom "until")
+            ("until" atom "do")
+            ("while" atom "do"))
       (stmts (stmt ";" stmts)
              (stmt))))))
 
@@ -77,8 +84,12 @@
     (`(:before . ,(or "{" "("))
      (when (smie-rule-hanging-p)
        (smie-rule-parent)))
+    (`(:before . "do") (smie-rule-parent -2))
     (`(:after . "}") 0)
     (`(:elem . basic) 2)
+    (`(:after . ";")
+     (when (smie-rule-prev-p "until" "while")
+       (smie-rule-parent 2)))
     (`(:before . "with") 2)))
 
 (defvar kalandralang-font-lock-keywords
