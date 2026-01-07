@@ -28,67 +28,58 @@
 
 (require 'smie)
 
-(defun kalandralang--skip-string (&optional back)
-  (when (eq (if back (char-before) (char-after)) ?\")
-    (let ((start (point)))
-      (if back (backward-char) (forward-char))
-      (while (nth 3 (syntax-ppss))
-        (if back (backward-char) (forward-char)))
-      (buffer-substring-no-properties
-       (min start (point))
-       (max start (point))))))
+(defun kalandralang-smie--empty-string-p (string)
+  "Return non-nil if STRING is null, blank or whitespace only."
+  (or (null string)
+      (string= string "")
+      (if (string-match-p "^\s+$" string) t)))
+
+(defconst kalandralang-smie--spaces-til-eol-regexp
+  (rx (and (* space) eol))
+  "Regex representing one or more whitespace characters concluding with eol.")
+
+(defun kalandralang-smie-forward-token ()
+  (cond
+   ((and (not (eobp))
+         (not (memq (char-before) '(?\{ ?\()))
+         (looking-at kalandralang-smie--spaces-til-eol-regexp))
+    (goto-char (1+ (match-end 0)))
+    ";")
+   (t
+    (let ((token (smie-default-forward-token)))
+      (unless (kalandralang-smie--empty-string-p token)
+        token)))))
 
 (defun kalandralang-smie-backward-token ()
-  (let ((start (point)))
+  (let ((pos (point)))
     (forward-comment (- (point)))
     (cond
-     ((kalandralang--skip-string 'back))
-     ((and (< (point) start)
-           (not (looking-back "\\s(\\|\\s)" 1))
-           (let ((pos (point)))
-             (goto-char start)
-             ;; if we are looking at a symbol, insert a virtual token
-             (prog1 (and (looking-at-p "\\(?:\\s_\\|\\sw\\)+[ \t]*")
-                         (progn
-                           (skip-syntax-backward " \t")
-                           (bolp)))
-               (goto-char pos))))
-      ;; this is a virtual token separating statements on different lines
+     ((and (> pos (line-end-position))
+           (not (memq (char-before) '(?\{ ?\())))
       ";")
-     (t
-      (buffer-substring-no-properties
-       (point)
-       (progn
-         (or (not (zerop (skip-syntax-backward ".")))
-             (not (zerop (skip-syntax-backward "()")))
-             (skip-syntax-backward "w_'"))
-         (point)))))))
+     (t (let ((token (smie-default-backward-token)))
+          (unless (kalandralang-smie--empty-string-p token)
+            token))))))
 
-(defconst kalandralang-smie-grammar
+(defun kalandralang-smie-grammar ()
   (smie-prec2->grammar
    (smie-bnf->prec2
-    '((stmt1 ("{" stmts "}")
-             ("if" stmt "then" stmt1 "else" stmt1)
-             ("while" stmt "do" stmt1)
-             ("until" stmt "do" stmt1))
-      (stmt (stmt1) ("if" stmt "then" stmt))
-      (stmts (stmts ";" stmts) (stmt)))
-    '((assoc ";")))))
+    '((atom)
+      (stmt (atom)
+            ("buy" stmts "with"))
+      (stmts (stmt ";" stmts)
+             (stmt))))))
 
 (defun kalandralang-smie-rules (kind token)
   (pcase (cons kind token)
-    (`(:after . ";") (smie-rule-separator kind))
-    (`(:before . ";")
+    (`(:before . ,(or "}" ")"))
+     (smie-rule-parent))
+    (`(:before . ,(or "{" "("))
      (when (smie-rule-hanging-p)
        (smie-rule-parent)))
+    (`(:after . "}") 0)
     (`(:elem . basic) 2)
-
-    (`(:before . "{")
-     (when (smie-rule-hanging-p)
-       (smie-rule-parent)))
-    (`(:after . "}") (smie-rule-parent))
-
-    (_ nil)))
+    (`(:before . "with") 2)))
 
 (defvar kalandralang-font-lock-keywords
   `(
@@ -119,7 +110,8 @@
               (regexp-opt '("transmute" "augment" "alt" "regal" "alch" "bless"
                             "scour" "chaos" "annul" "exalt" "divine"
                             "crusader_exalt" "hunter_exalt" "redeemer_exalt"
-                            "warlord_exalt" "veiled_chaos" "veil"
+                            "warlord_exalt" "shaper_exalt" "elder_exalt"
+                            "veiled_chaos" "veil" "veiled_exalt"
                             "essence_of_anger" "essence_of_anguish"
                             "essence_of_contempt" "essence_of_doubt"
                             "essence_of_dread" "essence_of_envy"
@@ -197,23 +189,32 @@
     (,(rx "." (1+ (not whitespace)) ":") 0 'font-lock-builtin-face))
   )
 
+(defconst kalandralang-mode-syntax-table
+  (with-syntax-table (copy-syntax-table)
+    (modify-syntax-entry ?# "<")
+    (modify-syntax-entry ?\n ">")
+    (modify-syntax-entry ?{ "(}")
+    (modify-syntax-entry ?} "){")
+    (modify-syntax-entry ?\( "()")
+    (modify-syntax-entry ?\) ")(")
+    (modify-syntax-entry ?\" "\"")
+    (syntax-table))
+  "Syntax table for Kalandralang.")
+
 ;;;###autoload
 (define-derived-mode kalandralang-mode prog-mode "Kalandralang"
   "Major mode for Kalandralang files."
-  (font-lock-add-keywords nil kalandralang-font-lock-keywords)
-
-  (modify-syntax-entry ?# "<" kalandralang-mode-syntax-table)
-  (modify-syntax-entry ?\n ">" kalandralang-mode-syntax-table)
-  (modify-syntax-entry ?{ "(}" kalandralang-mode-syntax-table)
-  (modify-syntax-entry ?} "){" kalandralang-mode-syntax-table)
-
-  (smie-setup kalandralang-smie-grammar
-              #'kalandralang-smie-rules
-              :backward-token #'kalandralang-smie-backward-token)
-
+  :syntax-table kalandralang-mode-syntax-table
   (setq-local comment-start "#")
   (setq-local comment-start-skip "#\\s-*")
-  (setq-local comment-end ""))
+  (setq-local comment-end "")
+
+  (font-lock-add-keywords nil kalandralang-font-lock-keywords)
+
+  (smie-setup (kalandralang-smie-grammar)
+              #'kalandralang-smie-rules
+              :forward-token #'kalandralang-smie-forward-token
+              :backward-token #'kalandralang-smie-backward-token))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.kld\\'" . kalandralang-mode))
